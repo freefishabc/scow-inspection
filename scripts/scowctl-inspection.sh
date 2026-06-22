@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# SCOW scowctl 巡检脚本：所有业务操作通过 scowctl，只有真实入口验证使用 curl。
 set -uo pipefail
 IFS=$'\n\t'
 
+# 每轮巡检独立落盘，避免覆盖历史证据。
 DOC_PATH="${DOC_PATH:-/home/private-scow/scowctl-巡检命令行流程.md}"
 RUN_ID="${SCOW_INSPECT_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 WORKDIR="${SCOW_INSPECT_WORKDIR:-/tmp/scowctl-inspection-${RUN_ID}}"
@@ -19,6 +21,7 @@ SCOW_API_AUTH_TOKEN="${SCOW_API_AUTH_TOKEN:-}"
 SCOW_BASE_URL="${SCOW_BASE_URL:-}"
 VERBOSE=0
 
+# 认证变量不能留空，也不能直接使用文档里的 <...> 占位符。
 is_placeholder_value() {
   local value="$1"
   [[ -z "$value" ]] && return 0
@@ -67,6 +70,8 @@ if is_placeholder_value "${SCOW_AUTH_USER:-}" || is_placeholder_value "${SCOW_AU
   exit 2
 fi
 
+# 清理队列用于异常退出时兜底删除本轮创建的资源。
+HPC_PROBES=()
 AI_PROBES=()
 HPC_JOBS=()
 AI_JOBS=()
@@ -718,6 +723,7 @@ run_capture() {
   fi
   local rc
   if [[ "$VERBOSE" -ge 2 ]]; then
+    # -vv 要回显命令输出，但函数 stdout 必须只返回 raw 文件路径。
     "$@" > >(tee "$out" > "$tty_output") 2> >(tee "$err" >&2)
     rc=$?
   else
@@ -893,6 +899,8 @@ curl_verify_entry() {
   append_report "- 来源: connect 返回 host/port/proxyType，入口按文档由 SCOW_BASE_URL 组合；token 与 password 不写入报告"
   append_report "- ENTRY_URL: ${entry_url}"
 
+  # 代理入口刚创建时偶尔会短暂 502，先重试几次再下结论。
+  # 代理入口刚创建时偶尔会短暂 502，先重试几次再下结论。
   for attempt in 1 2 3 4 5 6; do
     curl -sS --max-time 30 \
       "${curl_headers[@]}" \
@@ -1193,6 +1201,7 @@ inspect_ai_cluster() {
     state=$(json_from_file state "$out" "$dev_job" "$dev_session")
     if [[ -n "$dev_job" && -n "$dev_session" ]]; then
       dev_ready=0
+      # 开发机可能先排队，最多等约 30 秒，RUNNING 后才做连接验证。
       for attempt in 1 2 3 4 5 6; do
         if [[ "$state" == "RUNNING" ]]; then
           dev_ready=1
