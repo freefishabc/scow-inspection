@@ -817,6 +817,83 @@ command_rc() {
   [[ -f "$rcfile" ]] && cat "$rcfile" || printf '999'
 }
 
+# 从失败命令的 stdout/stderr 中提取简短原因。
+command_failure_detail() {
+  local name="$1"
+  local out="${RAW_DIR}/${name}.out"
+  local err="${RAW_DIR}/${name}.err"
+  python3 - "$out" "$err" "${SCOW_AUTH_SECRET:-}" "${SCOW_API_AUTH_TOKEN:-}" <<'PY_FAILURE_DETAIL'
+import json
+import re
+import sys
+from pathlib import Path
+
+out_path, err_path, secret, token = sys.argv[1:5]
+texts = []
+for file_path in (out_path, err_path):
+    path = Path(file_path)
+    if path.exists():
+        content = path.read_text(errors="replace").strip()
+        if content:
+            texts.append(content)
+text = "\n".join(texts).strip()
+if not text:
+    raise SystemExit(0)
+for value in (secret, token):
+    if value:
+        text = text.replace(value, "<redacted>")
+
+json_value = None
+for match in re.finditer(r"[\[{]", text):
+    try:
+        json_value, _ = json.JSONDecoder().raw_decode(text[match.start():])
+        break
+    except Exception:
+        pass
+
+def walk(value):
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+def collect(value):
+    parts = []
+    for item in walk(value):
+        if not isinstance(item, dict):
+            continue
+        for key in ("message", "code", "reason", "error", "detailedError", "details", "detail"):
+            val = item.get(key)
+            if isinstance(val, (str, int, float)) and str(val):
+                parts.append(f"{key}={val}")
+        issues = item.get("issues")
+        if isinstance(issues, list):
+            for issue in issues[:3]:
+                if isinstance(issue, dict):
+                    msg = issue.get("message")
+                    loc = issue.get("path")
+                    if msg:
+                        parts.append(f"issue={loc}: {msg}" if loc else f"issue={msg}")
+    seen = []
+    for part in parts:
+        if part not in seen:
+            seen.append(part)
+    return "; ".join(seen[:8])
+
+if json_value is not None:
+    detail = collect(json_value)
+    if detail:
+        print(detail[:800], end="")
+        raise SystemExit(0)
+
+lines = [line.strip() for line in text.splitlines() if line.strip()]
+print("; ".join(lines[:6])[:800], end="")
+PY_FAILURE_DETAIL
+}
+
 # 用逗号拼接数组内容。
 join_by_comma() {
   local IFS=,
@@ -1179,7 +1256,7 @@ inspect_hpc_cluster() {
 inspect_ai_cluster() {
   local cluster="$1"
   local cluster_safe="${cluster//[^A-Za-z0-9_]/_}"
-  local out home probe exist app_id account partition image_body image_out image_id sessions hist_job hist_session params app_body app_out job_id session_id state connect_out dev_body dev_out dev_job dev_session
+  local out home probe exist app_id account partition image_body image_out image_id image_create_name image_failure_detail sessions hist_job hist_session params app_body app_out job_id session_id state connect_out dev_body dev_out dev_job dev_session
 
   section "AI ${cluster}"
   scow_api "ai_${cluster_safe}_dashboard" "AI 只读检查：集群概览" GET /ai/api/dashboard/cluster clusterId="$cluster" >/dev/null || record_finding "${cluster}: AI dashboard 读取失败"
@@ -1189,22 +1266,26 @@ inspect_ai_cluster() {
   app_id=$(json_from_file app-id "$out")
   out=$(scow_api "ai_${cluster_safe}_home" "AI 文件与 WORK_DIR 来源" GET /ai/api/file/homeDir clusterId="$cluster") || true
   home=$(json_from_file home "$out")
-  scow_api "ai_${cluster_safe}_accounts_and_clusters" "AI 接口事实：accountsAndClusters help/实际行为可能不一致" GET /ai/api/apps/accountsAndClusters >/dev/null || record_finding "${cluster}: /ai/api/apps/accountsAndClusters 返回非零，按文档不阻塞"
 
   scow_api "ai_${cluster_safe}_image_help_create" "AI 镜像：OpenAPI help" help POST /ai/api/images >/dev/null || true
   scow_api "ai_${cluster_safe}_image_help_delete" "AI 镜像：OpenAPI help" help DELETE /ai/api/images/{id} >/dev/null || true
   out=$(scow_api "ai_${cluster_safe}_images_before" "AI 镜像：远程镜像历史来源" GET /ai/api/images clusterId="$cluster") || true
   image_body=$(json_from_file ai-image-body "$out" "$RUN_ID" "$cluster")
   if [[ -n "$image_body" ]]; then
-    image_out=$(scow_api_body "ai_${cluster_safe}_image_create" "AI 镜像：复用最近远程镜像记录并调整唯一字段" POST /ai/api/images "$image_body") || record_finding "${cluster}: AI 镜像创建返回非零"
-    image_id=$(json_from_file job-id "$image_out")
-    if [[ -n "$image_id" ]]; then
-      AI_IMAGES+=("$image_id")
-      scow_api "ai_${cluster_safe}_image_delete_${image_id}" "AI 镜像：删除本轮新建镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除失败"
-      scow_api "ai_${cluster_safe}_images_after" "AI 镜像：删除后复核列表" GET /ai/api/images clusterId="$cluster" >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除复核失败"
-      remove_ai_image_from_trap "$image_id"
+    image_create_name="ai_${cluster_safe}_image_create"
+    if image_out=$(scow_api_body "$image_create_name" "AI 镜像：复用最近远程镜像记录并调整唯一字段" POST /ai/api/images "$image_body"); then
+      image_id=$(json_from_file job-id "$image_out")
+      if [[ -n "$image_id" ]]; then
+        AI_IMAGES+=("$image_id")
+        scow_api "ai_${cluster_safe}_image_delete_${image_id}" "AI 镜像：删除本轮新建镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除失败"
+        scow_api "ai_${cluster_safe}_images_after" "AI 镜像：删除后复核列表" GET /ai/api/images clusterId="$cluster" >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除复核失败"
+        remove_ai_image_from_trap "$image_id"
+      else
+        record_finding "${cluster}: AI 镜像创建成功但返回中未识别 image id"
+      fi
     else
-      record_finding "${cluster}: AI 镜像创建返回中未识别 image id"
+      image_failure_detail=$(command_failure_detail "$image_create_name")
+      record_finding "${cluster}: AI 镜像创建失败${image_failure_detail:+：${image_failure_detail}}"
     fi
   else
     record_finding "${cluster}: 未从 /ai/api/images 取得可复用远程镜像参数，跳过镜像创建"
