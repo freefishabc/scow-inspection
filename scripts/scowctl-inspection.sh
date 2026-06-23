@@ -28,6 +28,7 @@ is_placeholder_value() {
   [[ "$value" == \<*\> ]]
 }
 
+# 输出脚本用法。
 usage() {
   cat <<USAGE
 用法:
@@ -90,10 +91,12 @@ from urllib.parse import urlparse
 PREFERRED_APPS = ["vscode", "code-server", "jupyterlab", "jupyter", "rstudio"]
 
 
+# 读取 stdin 中的原始文本。
 def read_text():
     return sys.stdin.read()
 
 
+# 从混合输出中提取第一段 JSON。
 def loads_any(text):
     text = text.strip()
     if not text:
@@ -114,6 +117,7 @@ def loads_any(text):
     return None
 
 
+# 深度遍历 JSON 结构中的所有节点。
 def walk(value):
     yield value
     if isinstance(value, dict):
@@ -124,6 +128,7 @@ def walk(value):
             yield from walk(v)
 
 
+# 遍历 JSON 并返回匹配 key 的值。
 def values_for_keys(value, keys):
     keys = {k.lower() for k in keys}
     for item in walk(value):
@@ -133,6 +138,7 @@ def values_for_keys(value, keys):
                     yield v
 
 
+# 将常见 JSON 值转换为字符串列表。
 def as_strings(value):
     result = []
     if value is None:
@@ -153,6 +159,7 @@ def as_strings(value):
     return result
 
 
+# 按原顺序去重并过滤空值。
 def uniq(seq):
     seen = set()
     out = []
@@ -167,6 +174,7 @@ def uniq(seq):
     return out
 
 
+# 按 key 优先级提取第一个标量值。
 def first_scalar(value, keys):
     for v in values_for_keys(value, keys):
         if isinstance(v, (str, int, float, bool)):
@@ -176,11 +184,13 @@ def first_scalar(value, keys):
     return ""
 
 
+# 将去重后的项目逐行输出。
 def print_lines(items):
     for item in uniq(items):
         print(item)
 
 
+# 从门户接口返回中提取可见集群。
 def cluster_portal(data):
     for keys in (["clusterIds", "availableClusters", "clusters"], ["clusterId", "id"]):
         out = []
@@ -191,6 +201,7 @@ def cluster_portal(data):
     return []
 
 
+# 从 AI 配置返回中提取 AI 集群。
 def cluster_ai(data):
     if isinstance(data, dict):
         keys = [k for k in data.keys() if isinstance(k, str) and k not in ("code", "message", "data", "success")]
@@ -202,6 +213,7 @@ def cluster_ai(data):
     return uniq(out)
 
 
+# 从运行时信息中提取已激活集群。
 def cluster_active(data):
     out = []
     for item in walk(data):
@@ -217,10 +229,12 @@ def cluster_active(data):
     return cluster_ai(data) or cluster_portal(data)
 
 
+# 从返回值中选择可用账户。
 def pick_account(data):
     return first_scalar(data, ["accountName", "account", "accounts", "name", "id"])
 
 
+# 从返回值中选择可用分区。
 def pick_partition(data):
     for item in walk(data):
         if isinstance(item, dict):
@@ -231,10 +245,12 @@ def pick_partition(data):
     return first_scalar(data, ["partitionName", "partition", "partitions", "availablePartitions", "name", "id"])
 
 
+# 从返回值中提取 home 目录。
 def home_path(data):
     return first_scalar(data, ["path", "home", "homeDir", "homeDirectory"])
 
 
+# 将文件存在性响应规范化为 true/false/unknown。
 def truthy_exists(data):
     for key in ["exists", "exist", "isExist", "isExists"]:
         for v in values_for_keys(data, [key]):
@@ -248,6 +264,7 @@ def truthy_exists(data):
     return "unknown"
 
 
+# 从作业模板列表中提取模板 ID。
 def find_template_id(data):
     for item in walk(data):
         if isinstance(item, dict):
@@ -257,6 +274,7 @@ def find_template_id(data):
     return ""
 
 
+# 从应用对象中提取应用 ID。
 def app_id_from_obj(obj):
     if not isinstance(obj, dict):
         return ""
@@ -267,6 +285,7 @@ def app_id_from_obj(obj):
     return ""
 
 
+# 按优先级从应用列表中选择巡检应用。
 def select_app(data):
     candidates = []
     for item in walk(data):
@@ -285,12 +304,14 @@ def select_app(data):
     return candidates[0] if candidates else ""
 
 
+# 从创建响应中提取作业或资源 ID。
 def find_job_id(data):
     if isinstance(data, (str, int, float)):
         return str(data)
     return first_scalar(data, ["jobId", "devHostId", "id"])
 
 
+# 从会话列表中定位本轮 sessionId。
 def find_session_id(data, job_id="", stamp=""):
     chosen = ""
     for item in walk(data):
@@ -308,6 +329,7 @@ def find_session_id(data, job_id="", stamp=""):
     return chosen
 
 
+# 从会话或作业列表中提取状态。
 def find_state(data, job_id="", session_id=""):
     for item in walk(data):
         if not isinstance(item, dict):
@@ -321,6 +343,7 @@ def find_state(data, job_id="", session_id=""):
     return first_scalar(data, ["state", "status", "jobState"])
 
 
+# 从桌面列表中定位本轮桌面。
 def find_desktop(data, desktop_name):
     for host_group in walk(data):
         if not isinstance(host_group, dict) or "desktops" not in host_group:
@@ -355,10 +378,12 @@ def find_desktop(data, desktop_name):
             return
 
 
+# 从返回值中提取首个主机名。
 def first_host(data):
     return first_scalar(data, ["loginNode", "host", "node", "hostname"])
 
 
+# 去掉不能复用于创建请求的运行时字段。
 def strip_runtime_fields(obj):
     if not isinstance(obj, dict):
         return {}
@@ -369,6 +394,7 @@ def strip_runtime_fields(obj):
     return {k: v for k, v in obj.items() if k not in ignored}
 
 
+# 按优先字段从 JSON 中选择参数对象。
 def select_object(data, preferred_keys):
     if isinstance(data, dict):
         for key in preferred_keys:
@@ -381,6 +407,7 @@ def select_object(data, preferred_keys):
     return {}
 
 
+# 基于模板和实时参数生成 HPC 最小作业 body。
 def hpc_job_body(data, cluster, account, partition, stamp, home):
     src = strip_runtime_fields(select_object(data, ["jobTemplate", "template", "data"]))
     if not src and isinstance(data, dict) and "template" in data and isinstance(data["template"], dict):
@@ -420,6 +447,7 @@ def hpc_job_body(data, cluster, account, partition, stamp, home):
     print(json.dumps(body, ensure_ascii=False))
 
 
+# 基于历史提交生成 HPC 应用创建 body。
 def patch_hpc_app(data, cluster, app_id, stamp):
     src = strip_runtime_fields(select_object(data, ["lastSubmission", "submission", "data", "parameters"]))
     if isinstance(data, dict) and isinstance(data.get("lastSubmissionInfo"), dict):
@@ -441,6 +469,7 @@ def patch_hpc_app(data, cluster, app_id, stamp):
     print(json.dumps(body, ensure_ascii=False))
 
 
+# 确保 AI 应用 body 中包含 WORK_DIR。
 def ensure_work_dir(body, work_dir):
     envs = body.get("envVariables")
     if not isinstance(envs, list):
@@ -457,6 +486,7 @@ def ensure_work_dir(body, work_dir):
     body.setdefault("workingDirectory", work_dir)
 
 
+# 基于历史参数生成 AI 应用创建 body。
 def patch_ai_app(data, cluster, stamp, work_dir):
     if data is None:
         return
@@ -480,6 +510,7 @@ def patch_ai_app(data, cluster, stamp, work_dir):
     print(json.dumps(body, ensure_ascii=False))
 
 
+# 从 AI 历史会话中输出可复用候选。
 def ai_history_candidates(data):
     for item in walk(data):
         if not isinstance(item, dict):
@@ -495,6 +526,7 @@ def ai_history_candidates(data):
         print("\t".join([str(job_id), str(session_id), str(app_id or "")]))
 
 
+# 基于历史镜像记录生成 AI 镜像创建 body。
 def patch_ai_image(data, stamp, cluster):
     src = None
     for item in walk(data):
@@ -520,6 +552,7 @@ def patch_ai_image(data, stamp, cluster):
     print(json.dumps(body, ensure_ascii=False))
 
 
+# 归一化 connect 返回的真实入口信息。
 def connect_info(data):
     host = first_scalar(data, ["host"])
     port = first_scalar(data, ["port"])
@@ -530,6 +563,7 @@ def connect_info(data):
     print("\t".join([host, port, password, proxy_type, path, query]))
 
 
+# 从真实 HTML 登录页提取隐藏字段。
 def html_field(text, field):
     pattern = rf'<input[^>]+name=["\']{re.escape(field)}["\'][^>]*>'
     m = re.search(pattern, text, re.I)
@@ -540,6 +574,7 @@ def html_field(text, field):
     return vm.group(1) if vm else ""
 
 
+# 从 profile 输出中提取 baseUrl。
 def base_url(text):
     data = loads_any(text)
     if data is not None:
@@ -552,6 +587,7 @@ def base_url(text):
         print(m.group(1).rstrip("/"))
 
 
+# 从 URL 中提取 host。
 def host_of(url):
     try:
         print(urlparse(url).hostname or "")
@@ -559,6 +595,7 @@ def host_of(url):
         print("")
 
 
+# 根据命令分发 JSON helper 功能。
 def main():
     cmd = sys.argv[1]
     text = read_text()
@@ -622,6 +659,7 @@ if __name__ == "__main__":
     main()
 PY
 
+# 用内嵌 Python 从 raw 文件中提取字段。
 json_from_file() {
   local cmd="$1"
   local file="$2"
@@ -629,12 +667,14 @@ json_from_file() {
   python3 "${WORKDIR}/json_helper.py" "$cmd" "$@" < "$file"
 }
 
+# 用内嵌 Python 从 stdin 文本中提取字段。
 json_from_text() {
   local cmd="$1"
   shift
   python3 "${WORKDIR}/json_helper.py" "$cmd" "$@"
 }
 
+# 生成脱敏后的命令字符串。
 redacted_command() {
   local skip_next=0
   local arg
@@ -666,40 +706,47 @@ redacted_command() {
   printf '%q ' "${out[@]}"
 }
 
+# 向巡检报告追加一行内容。
 append_report() {
   printf '%s\n' "$*" >> "$REPORT"
 }
 
+# 开始一个报告章节并在终端显示标题。
 section() {
   append_report ""
   append_report "## $*"
   printf '\n== %s ==\n' "$*"
 }
 
+# 记录非阻塞发现。
 record_finding() {
   FINDINGS=$((FINDINGS + 1))
   append_report "- FINDING: $*"
   printf 'FINDING: %s\n' "$*"
 }
 
+# 记录会导致 fail 的错误。
 record_failure() {
   FAILURES=$((FAILURES + 1))
   append_report "- FAIL: $*"
   printf 'FAIL: %s\n' "$*"
 }
 
+# 记录导致 blocked 的阻塞项。
 record_blocked() {
   BLOCKED=$((BLOCKED + 1))
   append_report "- BLOCKED: $*"
   printf 'BLOCKED: %s\n' "$*"
 }
 
+# 记录资源清理失败。
 record_cleanup_failure() {
   CLEANUP_FAILURES=$((CLEANUP_FAILURES + 1))
   append_report "- CLEANUP_FAIL: $*"
   printf 'CLEANUP_FAIL: %s\n' "$*"
 }
 
+# 执行命令并统一处理落盘、回显和退出码。
 run_capture() {
   local name="$1"
   local source_note="$2"
@@ -742,6 +789,7 @@ run_capture() {
   return "$rc"
 }
 
+# 执行不带 JSON body 的 scowctl api 命令。
 scow_api() {
   local name="$1"
   local source_note="$2"
@@ -751,6 +799,7 @@ scow_api() {
   run_capture "$name" "$source_note" scowctl api "$method" "$path" "$@"
 }
 
+# 执行带 JSON body 的 scowctl api 命令。
 scow_api_body() {
   local name="$1"
   local source_note="$2"
@@ -761,17 +810,97 @@ scow_api_body() {
   run_capture "$name" "$source_note" scowctl api "$method" "$path" --body "$body" "$@"
 }
 
+# 读取指定命令的退出码。
 command_rc() {
   local name="$1"
   local rcfile="${RAW_DIR}/${name}.rc"
   [[ -f "$rcfile" ]] && cat "$rcfile" || printf '999'
 }
 
+# 从失败命令的 stdout/stderr 中提取简短原因。
+command_failure_detail() {
+  local name="$1"
+  local out="${RAW_DIR}/${name}.out"
+  local err="${RAW_DIR}/${name}.err"
+  python3 - "$out" "$err" "${SCOW_AUTH_SECRET:-}" "${SCOW_API_AUTH_TOKEN:-}" <<'PY_FAILURE_DETAIL'
+import json
+import re
+import sys
+from pathlib import Path
+
+out_path, err_path, secret, token = sys.argv[1:5]
+texts = []
+for file_path in (out_path, err_path):
+    path = Path(file_path)
+    if path.exists():
+        content = path.read_text(errors="replace").strip()
+        if content:
+            texts.append(content)
+text = "\n".join(texts).strip()
+if not text:
+    raise SystemExit(0)
+for value in (secret, token):
+    if value:
+        text = text.replace(value, "<redacted>")
+
+json_value = None
+for match in re.finditer(r"[\[{]", text):
+    try:
+        json_value, _ = json.JSONDecoder().raw_decode(text[match.start():])
+        break
+    except Exception:
+        pass
+
+def walk(value):
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+def collect(value):
+    parts = []
+    for item in walk(value):
+        if not isinstance(item, dict):
+            continue
+        for key in ("message", "code", "reason", "error", "detailedError", "details", "detail"):
+            val = item.get(key)
+            if isinstance(val, (str, int, float)) and str(val):
+                parts.append(f"{key}={val}")
+        issues = item.get("issues")
+        if isinstance(issues, list):
+            for issue in issues[:3]:
+                if isinstance(issue, dict):
+                    msg = issue.get("message")
+                    loc = issue.get("path")
+                    if msg:
+                        parts.append(f"issue={loc}: {msg}" if loc else f"issue={msg}")
+    seen = []
+    for part in parts:
+        if part not in seen:
+            seen.append(part)
+    return "; ".join(seen[:8])
+
+if json_value is not None:
+    detail = collect(json_value)
+    if detail:
+        print(detail[:800], end="")
+        raise SystemExit(0)
+
+lines = [line.strip() for line in text.splitlines() if line.strip()]
+print("; ".join(lines[:6])[:800], end="")
+PY_FAILURE_DETAIL
+}
+
+# 用逗号拼接数组内容。
 join_by_comma() {
   local IFS=,
   printf '%s' "$*"
 }
 
+# 判断数组中是否包含指定值。
 contains_item() {
   local needle="$1"
   shift
@@ -782,12 +911,14 @@ contains_item() {
   return 1
 }
 
+# 清理 HPC 文件探针。
 cleanup_hpc_probe() {
   local cluster="$1"
   local path="$2"
   scow_api "cleanup_hpc_probe_${cluster}_${RUN_ID}" "trap cleanup: 本轮 HPC 文件探针" DELETE /api/file/deleteFile cluster="$cluster" path="$path" >/dev/null || true
 }
 
+# 清理 AI 文件探针。
 cleanup_ai_probe() {
   local cluster="$1"
   local path="$2"
@@ -796,23 +927,27 @@ cleanup_ai_probe() {
   scow_api_body "cleanup_ai_probe_${cluster}_${RUN_ID}" "trap cleanup: 本轮 AI 文件探针" POST /ai/api/file/delete "$body" >/dev/null || true
 }
 
+# 清理 HPC 作业或应用作业。
 cleanup_hpc_job() {
   local cluster="$1"
   local job_id="$2"
   scow_api "cleanup_hpc_job_${cluster}_${job_id}_${RUN_ID}" "trap cleanup: 本轮 HPC 作业或应用作业" DELETE /api/job/cancelJob cluster="$cluster" jobId="$job_id" >/dev/null || true
 }
 
+# 清理 AI 作业或应用会话。
 cleanup_ai_job() {
   local cluster="$1"
   local job_id="$2"
   scow_api "cleanup_ai_job_${cluster}_${job_id}_${RUN_ID}" "trap cleanup: 本轮 AI 作业" DELETE /ai/api/jobs/{jobId} jobId="$job_id" cluster="$cluster" >/dev/null || true
 }
 
+# 清理 AI 镜像探针。
 cleanup_ai_image() {
   local image_id="$1"
   scow_api "cleanup_ai_image_${image_id}_${RUN_ID}" "trap cleanup: 本轮 AI 镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || true
 }
 
+# 执行退出前的兜底清理。
 final_trap_cleanup() {
   local item cluster path job image_id
   for item in "${HPC_PROBES[@]}"; do IFS='|' read -r cluster path <<< "$item"; cleanup_hpc_probe "$cluster" "$path"; done
@@ -823,36 +958,42 @@ final_trap_cleanup() {
 }
 trap final_trap_cleanup EXIT
 
+# 从兜底清理队列移除已清理的 HPC 探针。
 remove_hpc_probe_from_trap() {
   local target="$1|$2" new=() item
   for item in "${HPC_PROBES[@]}"; do [[ "$item" != "$target" ]] && new+=("$item"); done
   HPC_PROBES=("${new[@]}")
 }
 
+# 从兜底清理队列移除已清理的 AI 探针。
 remove_ai_probe_from_trap() {
   local target="$1|$2" new=() item
   for item in "${AI_PROBES[@]}"; do [[ "$item" != "$target" ]] && new+=("$item"); done
   AI_PROBES=("${new[@]}")
 }
 
+# 从兜底清理队列移除已清理的 HPC 作业。
 remove_hpc_job_from_trap() {
   local target="$1|$2" new=() item
   for item in "${HPC_JOBS[@]}"; do [[ "$item" != "$target" ]] && new+=("$item"); done
   HPC_JOBS=("${new[@]}")
 }
 
+# 从兜底清理队列移除已清理的 AI 作业。
 remove_ai_job_from_trap() {
   local target="$1|$2" new=() item
   for item in "${AI_JOBS[@]}"; do [[ "$item" != "$target" ]] && new+=("$item"); done
   AI_JOBS=("${new[@]}")
 }
 
+# 从兜底清理队列移除已清理的 AI 镜像。
 remove_ai_image_from_trap() {
   local target="$1" new=() item
   for item in "${AI_IMAGES[@]}"; do [[ "$item" != "$target" ]] && new+=("$item"); done
   AI_IMAGES=("${new[@]}")
 }
 
+# 通过 SCOW 代理真实访问应用入口。
 curl_verify_entry() {
   local scope="$1"
   local cluster="$2"
@@ -952,6 +1093,7 @@ curl_verify_entry() {
   return 1
 }
 
+# 执行单个 HPC 集群的完整巡检。
 inspect_hpc_cluster() {
   local cluster="$1"
   local cluster_safe="${cluster//[^A-Za-z0-9_]/_}"
@@ -1110,10 +1252,11 @@ inspect_hpc_cluster() {
   fi
 }
 
+# 执行单个 AI 集群的完整巡检。
 inspect_ai_cluster() {
   local cluster="$1"
   local cluster_safe="${cluster//[^A-Za-z0-9_]/_}"
-  local out home probe exist app_id account partition image_body image_out image_id sessions hist_job hist_session params app_body app_out job_id session_id state connect_out dev_body dev_out dev_job dev_session
+  local out home probe exist app_id account partition image_body image_out image_id image_create_name image_failure_detail sessions hist_job hist_session params app_body app_out job_id session_id state connect_out dev_body dev_out dev_job dev_session
 
   section "AI ${cluster}"
   scow_api "ai_${cluster_safe}_dashboard" "AI 只读检查：集群概览" GET /ai/api/dashboard/cluster clusterId="$cluster" >/dev/null || record_finding "${cluster}: AI dashboard 读取失败"
@@ -1123,22 +1266,26 @@ inspect_ai_cluster() {
   app_id=$(json_from_file app-id "$out")
   out=$(scow_api "ai_${cluster_safe}_home" "AI 文件与 WORK_DIR 来源" GET /ai/api/file/homeDir clusterId="$cluster") || true
   home=$(json_from_file home "$out")
-  scow_api "ai_${cluster_safe}_accounts_and_clusters" "AI 接口事实：accountsAndClusters help/实际行为可能不一致" GET /ai/api/apps/accountsAndClusters >/dev/null || record_finding "${cluster}: /ai/api/apps/accountsAndClusters 返回非零，按文档不阻塞"
 
   scow_api "ai_${cluster_safe}_image_help_create" "AI 镜像：OpenAPI help" help POST /ai/api/images >/dev/null || true
   scow_api "ai_${cluster_safe}_image_help_delete" "AI 镜像：OpenAPI help" help DELETE /ai/api/images/{id} >/dev/null || true
   out=$(scow_api "ai_${cluster_safe}_images_before" "AI 镜像：远程镜像历史来源" GET /ai/api/images clusterId="$cluster") || true
   image_body=$(json_from_file ai-image-body "$out" "$RUN_ID" "$cluster")
   if [[ -n "$image_body" ]]; then
-    image_out=$(scow_api_body "ai_${cluster_safe}_image_create" "AI 镜像：复用最近远程镜像记录并调整唯一字段" POST /ai/api/images "$image_body") || record_finding "${cluster}: AI 镜像创建返回非零"
-    image_id=$(json_from_file job-id "$image_out")
-    if [[ -n "$image_id" ]]; then
-      AI_IMAGES+=("$image_id")
-      scow_api "ai_${cluster_safe}_image_delete_${image_id}" "AI 镜像：删除本轮新建镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除失败"
-      scow_api "ai_${cluster_safe}_images_after" "AI 镜像：删除后复核列表" GET /ai/api/images clusterId="$cluster" >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除复核失败"
-      remove_ai_image_from_trap "$image_id"
+    image_create_name="ai_${cluster_safe}_image_create"
+    if image_out=$(scow_api_body "$image_create_name" "AI 镜像：复用最近远程镜像记录并调整唯一字段" POST /ai/api/images "$image_body"); then
+      image_id=$(json_from_file job-id "$image_out")
+      if [[ -n "$image_id" ]]; then
+        AI_IMAGES+=("$image_id")
+        scow_api "ai_${cluster_safe}_image_delete_${image_id}" "AI 镜像：删除本轮新建镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除失败"
+        scow_api "ai_${cluster_safe}_images_after" "AI 镜像：删除后复核列表" GET /ai/api/images clusterId="$cluster" >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除复核失败"
+        remove_ai_image_from_trap "$image_id"
+      else
+        record_finding "${cluster}: AI 镜像创建成功但返回中未识别 image id"
+      fi
     else
-      record_finding "${cluster}: AI 镜像创建返回中未识别 image id"
+      image_failure_detail=$(command_failure_detail "$image_create_name")
+      record_finding "${cluster}: AI 镜像创建失败${image_failure_detail:+：${image_failure_detail}}"
     fi
   else
     record_finding "${cluster}: 未从 /ai/api/images 取得可复用远程镜像参数，跳过镜像创建"

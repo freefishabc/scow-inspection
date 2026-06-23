@@ -370,8 +370,6 @@ scowctl api GET /ai/api/file/homeDir clusterId=<CLUSTER>
 <WORK_DIR> = <HOME_PATH>
 ```
 
-注意：`/ai/api/apps/accountsAndClusters` help 只显示可选 `appId`，但实测无参数或 `appId=vscode` 返回 400 缺 `clusterId`，而传 `clusterId` 又会被 `scowctl` 判为 unknown parameter。记录该事实，不要在此阻塞；账户/分区优先从历史会话参数获取。
-
 如已得到 `<ACCOUNT_NAME>`，可查分区：
 
 ```bash
