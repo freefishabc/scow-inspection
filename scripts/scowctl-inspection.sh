@@ -1123,7 +1123,7 @@ curl_verify_entry() {
 inspect_hpc_cluster() {
   local cluster="$1"
   local cluster_safe="${cluster//[^A-Za-z0-9_]/_}"
-  local out account partition home probe exist desktop_name login_node login_nodes desktop_json desktop_id display_id job_body submit_out job_id start_iso end_iso state outputs app_id app_body app_submit app_job_id sessions session_id connect_out
+  local out account partition home probe exist desktop_name login_node login_nodes shell_login_node login_node_safe desktop_json desktop_id display_id job_body submit_out job_id start_iso end_iso state outputs app_id app_body app_submit app_job_id sessions session_id connect_out
 
   section "HPC ${cluster}"
   scow_api "hpc_${cluster_safe}_cluster_info" "HPC 只读检查：集群概览" GET /api/dashboard/getClusterInfo clusterId="$cluster" >/dev/null || record_finding "${cluster}: getClusterInfo 返回非零"
@@ -1166,26 +1166,30 @@ inspect_hpc_cluster() {
 
   out=$(scow_api "hpc_${cluster_safe}_cluster_configs" "HPC 桌面：从集群配置取得全部 loginNodes" GET /api/getClusterConfigFiles) || true
   mapfile -t login_nodes < <(json_from_file login-nodes "$out" "$cluster")
-  login_node="${login_nodes[0]:-}"
   scow_api_body "hpc_${cluster_safe}_desktops_before" "HPC 桌面：创建前查询现有桌面列表" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")" >/dev/null || true
-  if [[ -n "$login_node" ]]; then
+  if [[ "${#login_nodes[@]}" -gt 0 ]]; then
     scow_api "hpc_${cluster_safe}_desktop_create_help" "HPC 桌面：OpenAPI help" help POST /api/desktop/createDesktop >/dev/null || true
     scow_api "hpc_${cluster_safe}_desktop_kill_help" "HPC 桌面：OpenAPI help" help POST /api/desktop/killDesktop >/dev/null || true
-    desktop_name="scowctl-inspect-desktop-${RUN_ID}"
-    scow_api_body "hpc_${cluster_safe}_desktop_create" "HPC 桌面：loginNode 来自 /api/getClusterConfigFiles" POST /api/desktop/createDesktop "$(printf '{"cluster":"%s","desktopName":"%s","loginNode":"%s","remoteControlTool":"vnc","wm":"xfce"}' "$cluster" "$desktop_name" "$login_node")" >/dev/null || record_finding "${cluster}: 桌面创建失败"
-    out=$(scow_api_body "hpc_${cluster_safe}_desktops_after_create" "HPC 桌面：创建后列表复核并取 id/displayId" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")") || true
-    desktop_json=$(json_from_file desktop "$out" "$desktop_name")
-    if [[ -n "$desktop_json" ]]; then
-      desktop_id=$(printf '%s' "$desktop_json" | json_from_text job-id)
-      display_id=$(printf '%s' "$desktop_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("displayId", ""), end="")')
-      login_node=$(printf '%s' "$desktop_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("loginNode", ""), end="")')
-      scow_api_body "hpc_${cluster_safe}_desktop_kill" "HPC 桌面：使用 listDesktops 返回的 id/displayId/loginNode 清理" POST /api/desktop/killDesktop "$(printf '{"cluster":"%s","loginNode":"%s","id":%s,"displayId":%s}' "$cluster" "$login_node" "$desktop_id" "$display_id")" >/dev/null || record_cleanup_failure "${cluster}: 桌面关闭失败"
-      scow_api_body "hpc_${cluster_safe}_desktops_after_kill" "HPC 桌面：清理后复核列表" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")" >/dev/null || record_cleanup_failure "${cluster}: 桌面清理复核失败"
-    else
-      record_finding "${cluster}: 桌面创建后未在列表中定位本轮桌面"
-    fi
+    for login_node in "${login_nodes[@]}"; do
+      [[ -z "$login_node" ]] && continue
+      login_node_safe="${login_node//[^A-Za-z0-9_]/_}"
+      run_capture "hpc_${cluster_safe}_shell_${login_node_safe}" "HPC 登录节点 shell：scowctl shell 执行 hostname" scowctl shell "$cluster" "$login_node" -- hostname >/dev/null || record_finding "${cluster}/${login_node}: scowctl shell hostname 失败"
+      desktop_name="scowctl-inspect-desktop-${RUN_ID}-${login_node_safe}"
+      scow_api_body "hpc_${cluster_safe}_desktop_create_${login_node_safe}" "HPC 桌面：loginNode 来自 /api/getClusterConfigFiles" POST /api/desktop/createDesktop "$(printf '{"cluster":"%s","desktopName":"%s","loginNode":"%s","remoteControlTool":"vnc","wm":"xfce"}' "$cluster" "$desktop_name" "$login_node")" >/dev/null || record_finding "${cluster}/${login_node}: 桌面创建失败"
+      out=$(scow_api_body "hpc_${cluster_safe}_desktops_after_create_${login_node_safe}" "HPC 桌面：创建后列表复核并取 id/displayId" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")") || true
+      desktop_json=$(json_from_file desktop "$out" "$desktop_name")
+      if [[ -n "$desktop_json" ]]; then
+        desktop_id=$(printf '%s' "$desktop_json" | json_from_text job-id)
+        display_id=$(printf '%s' "$desktop_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("displayId", ""), end="")')
+        login_node=$(printf '%s' "$desktop_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("loginNode", ""), end="")')
+        scow_api_body "hpc_${cluster_safe}_desktop_kill_${login_node_safe}" "HPC 桌面：使用 listDesktops 返回的 id/displayId/loginNode 清理" POST /api/desktop/killDesktop "$(printf '{"cluster":"%s","loginNode":"%s","id":%s,"displayId":%s}' "$cluster" "$login_node" "$desktop_id" "$display_id")" >/dev/null || record_cleanup_failure "${cluster}/${login_node}: 桌面关闭失败"
+        scow_api_body "hpc_${cluster_safe}_desktops_after_kill_${login_node_safe}" "HPC 桌面：清理后复核列表" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")" >/dev/null || record_cleanup_failure "${cluster}/${login_node}: 桌面清理复核失败"
+      else
+        record_finding "${cluster}/${login_node}: 桌面创建后未在列表中定位本轮桌面"
+      fi
+    done
   else
-    record_finding "${cluster}: /api/getClusterConfigFiles 未提供 loginNodes，跳过桌面创建"
+    record_finding "${cluster}: /api/getClusterConfigFiles 未提供 loginNodes，跳过 shell 与桌面创建"
   fi
 
   scow_api "hpc_${cluster_safe}_submit_help" "HPC 最小作业：OpenAPI help" help POST /api/job/submitJob >/dev/null || true

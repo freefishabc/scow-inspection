@@ -162,16 +162,17 @@ scowctl api GET /api/file/fileExist cluster=<CLUSTER> path=<PROBE_FILE>
 
 ### 4.3 HPC 桌面
 
-先从集群配置取得登录节点，再查询现有桌面：
+先从集群配置取得登录节点，并对每个登录节点验证 shell 可用性，再查询现有桌面：
 
 ```bash
 scowctl api GET /api/getClusterConfigFiles
+scowctl shell <CLUSTER> <LOGIN_NODE> -- hostname
 scowctl api POST /api/desktop/listDesktops --body '{"clusters":[{"cluster":"<CLUSTER>","loginNodes":[]}]}'
 ```
 
-`/api/getClusterConfigFiles` 返回 `<CLUSTER>.loginNodes[].address`，这是创建桌面应使用的集群登录节点来源；`listDesktops` 返回的是各登录节点上的现有桌面列表，只用于创建前后复核，不作为登录节点配置的权威来源。若 `listDesktops` 在无桌面时返回 `desktops: []`，只说明该节点当前没有桌面。
+`/api/getClusterConfigFiles` 返回 `<CLUSTER>.loginNodes[].address`，这是创建桌面和 shell 连通性检查应使用的集群登录节点来源；对其中每个登录节点执行 `scowctl shell <CLUSTER> <LOGIN_NODE> -- hostname`，任一登录节点 shell 不可用应记录为 finding。`listDesktops` 返回的是各登录节点上的现有桌面列表，只用于创建前后复核，不作为登录节点配置的权威来源。若 `listDesktops` 在无桌面时返回 `desktops: []`，只说明该节点当前没有桌面。
 
-若继续做桌面创建，先查 help，再使用 `/api/getClusterConfigFiles` 返回的真实 `loginNodes[].address` 作为 `loginNode`，使用当前实例支持的 `remoteControlTool` 与 `wm` 创建、复核、关闭：
+若继续做桌面创建，先查 help，再对 `/api/getClusterConfigFiles` 返回的每个真实 `loginNodes[].address` 分别作为 `loginNode` 创建、复核、关闭桌面：
 
 ```bash
 scowctl api help POST /api/desktop/createDesktop
@@ -186,7 +187,7 @@ scowctl api POST /api/desktop/listDesktops --body '{"clusters":[{"cluster":"<CLU
 赋值：
 
 ```text
-<LOGIN_NODE> = /api/getClusterConfigFiles 返回的 <CLUSTER>.loginNodes[].address，例如 10.100.156.83
+<LOGIN_NODE> = /api/getClusterConfigFiles 返回的每个 <CLUSTER>.loginNodes[].address，例如 10.100.156.83
 <DESKTOP_ID>, <DISPLAY_ID> = createDesktop 后再次 listDesktops 返回的新桌面记录
 ```
 
