@@ -162,28 +162,31 @@ scowctl api GET /api/file/fileExist cluster=<CLUSTER> path=<PROBE_FILE>
 
 ### 4.3 HPC 桌面
 
-先查询现有桌面：
+先从集群配置取得登录节点，再查询现有桌面：
 
 ```bash
-scowctl api GET /api/desktop/listDesktops cluster=<CLUSTER>
+scowctl api GET /api/getClusterConfigFiles
+scowctl api POST /api/desktop/listDesktops --body '{"clusters":[{"cluster":"<CLUSTER>","loginNodes":[]}]}'
 ```
 
-若继续做桌面创建，先查 help，再使用 `listDesktops` 返回的真实 `host` 作为 `loginNode`，使用当前实例支持的 `remoteControlTool` 与 `wm` 创建、复核、关闭：
+`/api/getClusterConfigFiles` 返回 `<CLUSTER>.loginNodes[].address`，这是创建桌面应使用的集群登录节点来源；`listDesktops` 返回的是各登录节点上的现有桌面列表，只用于创建前后复核，不作为登录节点配置的权威来源。若 `listDesktops` 在无桌面时返回 `desktops: []`，只说明该节点当前没有桌面。
+
+若继续做桌面创建，先查 help，再使用 `/api/getClusterConfigFiles` 返回的真实 `loginNodes[].address` 作为 `loginNode`，使用当前实例支持的 `remoteControlTool` 与 `wm` 创建、复核、关闭：
 
 ```bash
 scowctl api help POST /api/desktop/createDesktop
 scowctl api help POST /api/desktop/launchDesktop
 scowctl api help POST /api/desktop/killDesktop
 scowctl api POST /api/desktop/createDesktop --body '{"cluster":"<CLUSTER>","desktopName":"scowctl-inspect-desktop-<TIMESTAMP>","loginNode":"<LOGIN_NODE>","remoteControlTool":"vnc","wm":"xfce"}'
-scowctl api GET /api/desktop/listDesktops cluster=<CLUSTER>
+scowctl api POST /api/desktop/listDesktops --body '{"clusters":[{"cluster":"<CLUSTER>","loginNodes":[]}]}'
 scowctl api POST /api/desktop/killDesktop --body '{"cluster":"<CLUSTER>","loginNode":"<LOGIN_NODE>","id":<DESKTOP_ID>,"displayId":<DISPLAY_ID>}'
-scowctl api GET /api/desktop/listDesktops cluster=<CLUSTER>
+scowctl api POST /api/desktop/listDesktops --body '{"clusters":[{"cluster":"<CLUSTER>","loginNodes":[]}]}'
 ```
 
 赋值：
 
 ```text
-<LOGIN_NODE> = listDesktops 返回的 host，例如 10.100.156.83
+<LOGIN_NODE> = /api/getClusterConfigFiles 返回的 <CLUSTER>.loginNodes[].address，例如 10.100.156.83
 <DESKTOP_ID>, <DISPLAY_ID> = createDesktop 后再次 listDesktops 返回的新桌面记录
 ```
 
@@ -191,34 +194,23 @@ scowctl api GET /api/desktop/listDesktops cluster=<CLUSTER>
 
 ### 4.4 HPC 最小作业
 
-先查接口和历史模板：
+先查接口和模板列表可用性：
 
 ```bash
 scowctl api help POST /api/job/submitJob
 scowctl api help DELETE /api/job/cancelJob
-scowctl api GET /api/job/listJobTemplates clusters=<CLUSTER>
+scowctl api GET /api/job/listJobTemplates
 ```
 
-若存在模板：
-
-```bash
-scowctl api GET /api/job/getJobTemplate cluster=<CLUSTER> id=<TEMPLATE_ID>
-```
+当前 OpenAPI 缓存若不提供模板详情接口，不要调用 `GET /api/job/getJobTemplate`，最小作业 body 直接由账户、分区、home 路径和 `submitJob` help 中的必填字段组成。
 
 赋值：
 
 ```text
-<TEMPLATE_ID> = listJobTemplates 返回的模板 ID
-<REAL_BODY> = getJobTemplate 返回参数最小化后组成，命令使用 hostname
+<REAL_BODY> = account/cluster/partition/workingDirectory/output/errorOutput + submitJob 必填资源字段；命令使用 hostname
 ```
 
-若模板不可用：
-
-```bash
-scowctl api GET /api/job/getAccounts
-scowctl api GET /api/job/getAvailableAccountsAndClusters
-scowctl api GET /api/job/getAvailablePartitionsForCluster cluster=<CLUSTER>
-```
+最小作业 body 至少包含：`account`、`cluster`、`command`、`coreCount`、`errorOutput`、`jobName`、`maxTime`、`nodeCount`、`output`、`partition`、`save`、`workingDirectory`。其中 `nodeCount/coreCount/maxTime` 可用最小值 `1/1/5`；缺少 `nodeCount` 会触发 `BODY_VALIDATION_ERROR`。
 
 提交：
 
@@ -390,10 +382,12 @@ scowctl api GET /ai/api/images clusterId=<CLUSTER>
 <REAL_BODY> = 最近一次成功远程镜像记录 + 本轮唯一名称/tag
 ```
 
-创建并清理：
+创建后通过列表轮询 status，再按状态清理：
 
 ```bash
 scowctl api POST /ai/api/images --body '<REAL_BODY>'
+scowctl api GET /ai/api/images clusterId=<CLUSTER>
+# 每 5 秒查询一次，最多 30 秒，用本轮唯一 name/tag 定位镜像记录
 scowctl api DELETE /ai/api/images/{id} id=<IMAGE_ID> force=true isPlatformOwned=false
 scowctl api GET /ai/api/images clusterId=<CLUSTER>
 ```
@@ -401,10 +395,11 @@ scowctl api GET /ai/api/images clusterId=<CLUSTER>
 赋值：
 
 ```text
-<IMAGE_ID> = POST /ai/api/images 返回值；不要用既有历史镜像 id 清理本轮新建镜像
+<IMAGE_ID> = POST /ai/api/images 返回值，或创建后 GET /ai/api/images 中本轮唯一 name/tag 对应记录的 id；不要用既有历史镜像 id 清理本轮新建镜像
+<IMAGE_STATUS> = GET /ai/api/images 中本轮唯一 name/tag 对应记录的 status
 ```
 
-`/ai/api/images` 创建成功时可能只返回数字 id。删除后再次 `GET /ai/api/images clusterId=<CLUSTER>`，确认本轮唯一名称/tag 不在列表中。
+`/ai/api/images` 创建接口返回 0 只表示提交调用成功，不代表镜像已经上传成功。实际创建结果必须以创建后列表中的 `status` 为准；当前 private-scow 中合法值为 `CREATING`、`CREATED`、`FAILURE`。30 秒内若本轮镜像 status 保持在 `CREATING` 或变为 `CREATED`，判定本轮提交正常并执行删除回滚；若 status 为 `FAILURE`，不执行回滚，报告中提示人工查看失败原因；若 30 秒内无法用本轮唯一 name/tag 定位镜像，或 status 不是上述合法值，记录为 finding。删除后再次 `GET /ai/api/images clusterId=<CLUSTER>`，确认本轮唯一名称/tag 不在列表中。
 
 ### 5.3 AI 应用会话创建
 
@@ -640,5 +635,6 @@ AI 分支结果：...
 - 权限不足、关键变量无法从真实接口取得、流程无法继续：`blocked`。
 - 关键检查失败、真实访问失败或清理失败：至少 `pass_with_findings`，严重时 `fail`。
 - 所有关键检查成功且可回滚资源已清理：`pass`。
+- 若最终结论为 `pass_with_findings`，必须在最终输出中列出每条 finding 明细，不能只给数量。
 - `checkConnectivity` 成功不等于拿到入口；入口必须来自 HPC `connectToApp` 或 AI `connect`。
 - 猜测 URL 的 404 只记录为噪音，不作为平台缺陷。

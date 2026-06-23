@@ -15,6 +15,7 @@ FINDINGS=0
 FAILURES=0
 BLOCKED=0
 CLEANUP_FAILURES=0
+FINDING_ITEMS=()
 
 SCOW_USER_ID="${SCOW_USER_ID:-}"
 SCOW_API_AUTH_TOKEN="${SCOW_API_AUTH_TOKEN:-}"
@@ -410,40 +411,27 @@ def select_object(data, preferred_keys):
 # 基于模板和实时参数生成 HPC 最小作业 body。
 def hpc_job_body(data, cluster, account, partition, stamp, home):
     src = strip_runtime_fields(select_object(data, ["jobTemplate", "template", "data"]))
-    if not src and isinstance(data, dict) and "template" in data and isinstance(data["template"], dict):
-        src = strip_runtime_fields(data["template"])
-    body = dict(src)
-    body["cluster"] = cluster
-    if account:
-        if "accountName" in body or "account" not in body:
-            body["accountName"] = account
-        else:
-            body["account"] = account
-    if partition:
-        body["partition"] = partition
+    if not isinstance(src, dict) or ("message" in src and "code" in src):
+        src = {}
     name = f"scowctl-inspect-job-{stamp}"
-    for key in ("name", "jobName", "jobNameOrId"):
-        if key in body:
-            body[key] = name
-    if not any(k in body for k in ("name", "jobName", "jobNameOrId")):
-        body["name"] = name
-    if "command" in body or "script" not in body:
-        body["command"] = "hostname"
-    if "script" in body:
-        body["script"] = "hostname"
-    body.setdefault("save", False)
-    if "workingDirectory" not in body:
-        body["workingDirectory"] = home
-    out = f"{home}/scowctl-inspect-job-{stamp}.out" if home else f"scowctl-inspect-job-{stamp}.out"
-    err = f"{home}/scowctl-inspect-job-{stamp}.err" if home else f"scowctl-inspect-job-{stamp}.err"
-    if "output" in body or "outputPath" not in body:
-        body["output"] = out
-    else:
-        body["outputPath"] = out
-    if "errorOutput" in body or "errorOutputPath" not in body:
-        body["errorOutput"] = err
-    else:
-        body["errorOutputPath"] = err
+    body = {
+        "account": account,
+        "cluster": cluster,
+        "command": "hostname",
+        "coreCount": int(src.get("coreCount") or 1),
+        "errorOutput": f"{home}/scowctl-inspect-job-{stamp}.err" if home else f"scowctl-inspect-job-{stamp}.err",
+        "jobName": name,
+        "maxTime": int(src.get("maxTime") or 5),
+        "nodeCount": int(src.get("nodeCount") or 1),
+        "output": f"{home}/scowctl-inspect-job-{stamp}.out" if home else f"scowctl-inspect-job-{stamp}.out",
+        "partition": partition,
+        "save": False,
+        "workingDirectory": home,
+    }
+    for key in ("gpuCount", "memory", "qos", "maxTimeUnit", "scriptOutput"):
+        value = src.get(key)
+        if value not in (None, ""):
+            body[key] = value
     print(json.dumps(body, ensure_ascii=False))
 
 
@@ -552,6 +540,39 @@ def patch_ai_image(data, stamp, cluster):
     print(json.dumps(body, ensure_ascii=False))
 
 
+# 从 AI 镜像列表中定位本轮镜像并输出 id/status。
+def find_ai_image(data, name, tag):
+    for item in walk(data):
+        if not isinstance(item, dict):
+            continue
+        item_name = str(item.get("name", ""))
+        item_tag = str(item.get("tag", ""))
+        if name and item_name != name:
+            continue
+        if tag and item_tag != tag:
+            continue
+        image_id = item.get("id", item.get("imageId"))
+        status = item.get("status", item.get("state", item.get("createStatus", item.get("imageStatus"))))
+        print(json.dumps({"id": "" if image_id is None else str(image_id), "status": "" if status is None else str(status)}, ensure_ascii=False))
+        return
+
+
+# 从集群配置中提取登录节点地址。
+def cluster_login_nodes(data, cluster):
+    if not isinstance(data, dict):
+        return
+    configs = data.get("clusterConfigs") if isinstance(data.get("clusterConfigs"), dict) else data
+    config = configs.get(cluster) if isinstance(configs, dict) else None
+    if not isinstance(config, dict):
+        return
+    for item in config.get("loginNodes", []):
+        if not isinstance(item, dict):
+            continue
+        value = item.get("address") or item.get("host") or item.get("name")
+        if value:
+            print(str(value))
+
+
 # 归一化 connect 返回的真实入口信息。
 def connect_info(data):
     host = first_scalar(data, ["host"])
@@ -645,8 +666,12 @@ def main():
         patch_ai_app(data, args[0], args[1], args[2])
     elif cmd == "ai-image-body":
         patch_ai_image(data, args[0], args[1])
+    elif cmd == "ai-image":
+        find_ai_image(data, args[0] if args else "", args[1] if len(args) > 1 else "")
     elif cmd == "ai-history-candidates":
         ai_history_candidates(data)
+    elif cmd == "login-nodes":
+        cluster_login_nodes(data, args[0] if args else "")
     elif cmd == "connect-info":
         connect_info(data)
     elif cmd == "html-field":
@@ -721,6 +746,7 @@ section() {
 # 记录非阻塞发现。
 record_finding() {
   FINDINGS=$((FINDINGS + 1))
+  FINDING_ITEMS+=("$*")
   append_report "- FINDING: $*"
   printf 'FINDING: %s\n' "$*"
 }
@@ -1097,7 +1123,7 @@ curl_verify_entry() {
 inspect_hpc_cluster() {
   local cluster="$1"
   local cluster_safe="${cluster//[^A-Za-z0-9_]/_}"
-  local out account partition home probe exist desktop_name login_node desktop_json desktop_id display_id template_id template_json job_body submit_out job_id start_iso end_iso state outputs app_id app_body app_submit app_job_id sessions session_id connect_out
+  local out account partition home probe exist desktop_name login_node login_nodes desktop_json desktop_id display_id job_body submit_out job_id start_iso end_iso state outputs app_id app_body app_submit app_job_id sessions session_id connect_out
 
   section "HPC ${cluster}"
   scow_api "hpc_${cluster_safe}_cluster_info" "HPC 只读检查：集群概览" GET /api/dashboard/getClusterInfo clusterId="$cluster" >/dev/null || record_finding "${cluster}: getClusterInfo 返回非零"
@@ -1138,37 +1164,34 @@ inspect_hpc_cluster() {
     remove_hpc_probe_from_trap "$cluster" "$probe"
   fi
 
-  out=$(scow_api "hpc_${cluster_safe}_desktops_before" "HPC 桌面：查询现有桌面并取 loginNode" GET /api/desktop/listDesktops cluster="$cluster") || true
-  login_node=$(json_from_file host "$out")
+  out=$(scow_api "hpc_${cluster_safe}_cluster_configs" "HPC 桌面：从集群配置取得全部 loginNodes" GET /api/getClusterConfigFiles) || true
+  mapfile -t login_nodes < <(json_from_file login-nodes "$out" "$cluster")
+  login_node="${login_nodes[0]:-}"
+  scow_api_body "hpc_${cluster_safe}_desktops_before" "HPC 桌面：创建前查询现有桌面列表" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")" >/dev/null || true
   if [[ -n "$login_node" ]]; then
     scow_api "hpc_${cluster_safe}_desktop_create_help" "HPC 桌面：OpenAPI help" help POST /api/desktop/createDesktop >/dev/null || true
     scow_api "hpc_${cluster_safe}_desktop_kill_help" "HPC 桌面：OpenAPI help" help POST /api/desktop/killDesktop >/dev/null || true
     desktop_name="scowctl-inspect-desktop-${RUN_ID}"
-    scow_api_body "hpc_${cluster_safe}_desktop_create" "HPC 桌面：loginNode 来自 listDesktops.host" POST /api/desktop/createDesktop "$(printf '{"cluster":"%s","desktopName":"%s","loginNode":"%s","remoteControlTool":"vnc","wm":"xfce"}' "$cluster" "$desktop_name" "$login_node")" >/dev/null || record_finding "${cluster}: 桌面创建失败"
-    out=$(scow_api "hpc_${cluster_safe}_desktops_after_create" "HPC 桌面：创建后列表复核并取 id/displayId" GET /api/desktop/listDesktops cluster="$cluster") || true
+    scow_api_body "hpc_${cluster_safe}_desktop_create" "HPC 桌面：loginNode 来自 /api/getClusterConfigFiles" POST /api/desktop/createDesktop "$(printf '{"cluster":"%s","desktopName":"%s","loginNode":"%s","remoteControlTool":"vnc","wm":"xfce"}' "$cluster" "$desktop_name" "$login_node")" >/dev/null || record_finding "${cluster}: 桌面创建失败"
+    out=$(scow_api_body "hpc_${cluster_safe}_desktops_after_create" "HPC 桌面：创建后列表复核并取 id/displayId" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")") || true
     desktop_json=$(json_from_file desktop "$out" "$desktop_name")
     if [[ -n "$desktop_json" ]]; then
       desktop_id=$(printf '%s' "$desktop_json" | json_from_text job-id)
       display_id=$(printf '%s' "$desktop_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("displayId", ""), end="")')
       login_node=$(printf '%s' "$desktop_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("loginNode", ""), end="")')
       scow_api_body "hpc_${cluster_safe}_desktop_kill" "HPC 桌面：使用 listDesktops 返回的 id/displayId/loginNode 清理" POST /api/desktop/killDesktop "$(printf '{"cluster":"%s","loginNode":"%s","id":%s,"displayId":%s}' "$cluster" "$login_node" "$desktop_id" "$display_id")" >/dev/null || record_cleanup_failure "${cluster}: 桌面关闭失败"
-      scow_api "hpc_${cluster_safe}_desktops_after_kill" "HPC 桌面：清理后复核列表" GET /api/desktop/listDesktops cluster="$cluster" >/dev/null || record_cleanup_failure "${cluster}: 桌面清理复核失败"
+      scow_api_body "hpc_${cluster_safe}_desktops_after_kill" "HPC 桌面：清理后复核列表" POST /api/desktop/listDesktops "$(printf '{"clusters":[{"cluster":"%s","loginNodes":[]}]}' "$cluster")" >/dev/null || record_cleanup_failure "${cluster}: 桌面清理复核失败"
     else
       record_finding "${cluster}: 桌面创建后未在列表中定位本轮桌面"
     fi
   else
-    record_finding "${cluster}: listDesktops 未提供 host/loginNode，跳过桌面创建"
+    record_finding "${cluster}: /api/getClusterConfigFiles 未提供 loginNodes，跳过桌面创建"
   fi
 
   scow_api "hpc_${cluster_safe}_submit_help" "HPC 最小作业：OpenAPI help" help POST /api/job/submitJob >/dev/null || true
   scow_api "hpc_${cluster_safe}_cancel_help" "HPC 最小作业：OpenAPI help" help DELETE /api/job/cancelJob >/dev/null || true
-  out=$(scow_api "hpc_${cluster_safe}_templates" "HPC 最小作业：优先复用作业模板" GET /api/job/listJobTemplates clusters="$cluster") || true
-  template_id=$(json_from_file template-id "$out")
-  template_json="$out"
-  if [[ -n "$template_id" ]]; then
-    template_json=$(scow_api "hpc_${cluster_safe}_template_${template_id}" "HPC 最小作业：模板详情" GET /api/job/getJobTemplate cluster="$cluster" id="$template_id") || template_json="$out"
-  fi
-  job_body=$(json_from_file hpc-job-body "$template_json" "$cluster" "$account" "$partition" "$RUN_ID" "$home")
+  out=$(scow_api "hpc_${cluster_safe}_templates" "HPC 最小作业：查询作业模板列表；当前 OpenAPI 无模板详情接口时只用于证明接口可用" GET /api/job/listJobTemplates) || true
+  job_body=$(json_from_file hpc-job-body "$out" "$cluster" "$account" "$partition" "$RUN_ID" "$home")
   submit_out=$(scow_api_body "hpc_${cluster_safe}_job_submit" "HPC 最小作业：body 来自模板/账户/分区真实返回，命令改为 hostname" POST /api/job/submitJob "$job_body") || record_finding "${cluster}: 最小作业提交返回非零"
   job_id=$(json_from_file job-id "$submit_out")
   if [[ -n "$job_id" ]]; then
@@ -1256,7 +1279,7 @@ inspect_hpc_cluster() {
 inspect_ai_cluster() {
   local cluster="$1"
   local cluster_safe="${cluster//[^A-Za-z0-9_]/_}"
-  local out home probe exist app_id account partition image_body image_out image_id image_create_name image_failure_detail sessions hist_job hist_session params app_body app_out job_id session_id state connect_out dev_body dev_out dev_job dev_session
+  local out home probe exist app_id account partition image_body image_out image_id image_create_name image_failure_detail image_lookup image_status image_name image_tag image_status_ok attempt sessions hist_job hist_session params app_body app_out job_id session_id state connect_out dev_body dev_out dev_job dev_session
 
   section "AI ${cluster}"
   scow_api "ai_${cluster_safe}_dashboard" "AI 只读检查：集群概览" GET /ai/api/dashboard/cluster clusterId="$cluster" >/dev/null || record_finding "${cluster}: AI dashboard 读取失败"
@@ -1273,19 +1296,46 @@ inspect_ai_cluster() {
   image_body=$(json_from_file ai-image-body "$out" "$RUN_ID" "$cluster")
   if [[ -n "$image_body" ]]; then
     image_create_name="ai_${cluster_safe}_image_create"
+    image_name=$(printf '%s' "$image_body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name", ""), end="")')
+    image_tag=$(printf '%s' "$image_body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag", ""), end="")')
     if image_out=$(scow_api_body "$image_create_name" "AI 镜像：复用最近远程镜像记录并调整唯一字段" POST /ai/api/images "$image_body"); then
-      image_id=$(json_from_file job-id "$image_out")
-      if [[ -n "$image_id" ]]; then
-        AI_IMAGES+=("$image_id")
-        scow_api "ai_${cluster_safe}_image_delete_${image_id}" "AI 镜像：删除本轮新建镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除失败"
-        scow_api "ai_${cluster_safe}_images_after" "AI 镜像：删除后复核列表" GET /ai/api/images clusterId="$cluster" >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除复核失败"
-        remove_ai_image_from_trap "$image_id"
+      image_status_ok=0
+      for attempt in 1 2 3 4 5 6; do
+        out=$(scow_api "ai_${cluster_safe}_images_status_${attempt}" "AI 镜像：创建后通过列表轮询本轮镜像 status" GET /ai/api/images clusterId="$cluster") || true
+        image_lookup=$(json_from_file ai-image "$out" "$image_name" "$image_tag")
+        if [[ -n "$image_lookup" ]]; then
+          image_id=$(printf '%s' "$image_lookup" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""), end="")')
+          image_status=$(printf '%s' "$image_lookup" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""), end="")')
+          append_report "- AI image ${image_name}:${image_tag} status=${image_status:-unknown}"
+          if [[ "$image_status" == "FAILURE" ]]; then
+            break
+          fi
+          if [[ "$image_status" == "CREATING" || "$image_status" == "CREATED" ]]; then
+            image_status_ok=1
+          fi
+          [[ "$image_status" == "CREATED" ]] && break
+        fi
+        [[ "$attempt" == 6 ]] || sleep 5
+      done
+      if [[ -z "$image_lookup" ]]; then
+        record_finding "${cluster}: AI 镜像提交接口返回 0，但 30 秒内未在镜像列表定位本轮镜像 ${image_name}:${image_tag}"
+      elif [[ "$image_status" == "FAILURE" ]]; then
+        record_finding "${cluster}: AI 镜像 ${image_name}:${image_tag} 状态为 FAILURE，不执行回滚；请自行查看上传失败原因"
+      elif [[ "$image_status_ok" == 1 ]]; then
+        if [[ -n "$image_id" ]]; then
+          AI_IMAGES+=("$image_id")
+          scow_api "ai_${cluster_safe}_image_delete_${image_id}" "AI 镜像：状态正常后删除本轮新建镜像" DELETE /ai/api/images/{id} id="$image_id" force=true isPlatformOwned=false >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除失败"
+          scow_api "ai_${cluster_safe}_images_after" "AI 镜像：删除后复核列表" GET /ai/api/images clusterId="$cluster" >/dev/null || record_cleanup_failure "${cluster}: AI 镜像删除复核失败"
+          remove_ai_image_from_trap "$image_id"
+        else
+          record_finding "${cluster}: AI 镜像 ${image_name}:${image_tag} 状态正常但列表中未识别 image id，无法执行回滚"
+        fi
       else
-        record_finding "${cluster}: AI 镜像创建成功但返回中未识别 image id"
+        record_finding "${cluster}: AI 镜像 ${image_name}:${image_tag} 30 秒内状态为 ${image_status}，不判定为正常创建状态"
       fi
     else
       image_failure_detail=$(command_failure_detail "$image_create_name")
-      record_finding "${cluster}: AI 镜像创建失败${image_failure_detail:+：${image_failure_detail}}"
+      record_finding "${cluster}: AI 镜像创建调用失败${image_failure_detail:+：${image_failure_detail}}"
     fi
   else
     record_finding "${cluster}: 未从 /ai/api/images 取得可复用远程镜像参数，跳过镜像创建"
@@ -1508,6 +1558,12 @@ append_report "- findings=${FINDINGS}"
 append_report "- failures=${FAILURES}"
 append_report "- blocked=${BLOCKED}"
 append_report "- cleanup_failures=${CLEANUP_FAILURES}"
+if [[ "$FINDINGS" -gt 0 ]]; then
+  append_report "- finding_items:"
+  for finding in "${FINDING_ITEMS[@]}"; do
+    append_report "  - ${finding}"
+  done
+fi
 if [[ "$BLOCKED" -gt 0 ]]; then
   append_report "最终结论：blocked"
   conclusion="blocked"
